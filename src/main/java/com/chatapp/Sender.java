@@ -25,7 +25,7 @@ public final class Sender implements AutoCloseable{
     private final int listenerPort;
     private final String receiverIpAddress;
     private final DatagramSocket udpSocket;
-    private final UdpMessageListenerThread udpMessageListenerThread;
+    private final MessageListenerThread udpMessageListenerThread;
 
 
     public Sender() throws IOException {
@@ -42,7 +42,7 @@ public final class Sender implements AutoCloseable{
         this.listenerPort = Integer.parseInt(keyboardReader.readLine());
 
         this.udpSocket = new DatagramSocket(listenerPort);
-        this.udpMessageListenerThread =  new UdpMessageListenerThread();
+        this.udpMessageListenerThread =  new MessageListenerThread();
         udpMessageListenerThread.start();
     }
 
@@ -51,7 +51,7 @@ public final class Sender implements AutoCloseable{
         udpSocket.close();
     }
 
-    class UdpMessageListenerThread extends Thread {
+    class MessageListenerThread extends Thread {
 
         private DatagramPacket receivedPacket;
 

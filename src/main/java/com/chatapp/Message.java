@@ -109,7 +109,7 @@ public class Message implements Serializable {
 
     @Override
     public String toString() {
-        return "Message [mensagens=" + messages + ", titulo=" + header + "]";
+        return "Message [mensagens=" + messages + ", header=" + header + "]";
     }
 
     public static enum MessageType {

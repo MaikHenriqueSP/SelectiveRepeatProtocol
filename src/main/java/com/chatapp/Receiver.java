@@ -9,6 +9,8 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.nio.charset.Charset;
 
+import com.chatapp.Message.MessageType;
+
 public class Receiver implements AutoCloseable {
     private final DatagramSocket socketUDP;
     public static final int SOCKET_RECEIVED_PORT = 10098;
@@ -57,6 +59,7 @@ public class Receiver implements AutoCloseable {
         public void run() {
             Message clientMessage = readClientMessage();
             System.out.println("Mensagem recebida do sender= " + clientMessage + "\n");
+            new MessageSenderThread(receivedPacket, MessageType.ACKNOWLEDGE).start();
         }
 
         private Message readClientMessage() {
@@ -71,6 +74,25 @@ public class Receiver implements AutoCloseable {
             }
 
             return null;
+        }
+    }
+
+    class MessageSenderThread extends Thread {
+
+        private final MessageType type;
+        private final DatagramPacket datagramPacket;
+
+        public MessageSenderThread(final DatagramPacket datagramPacket, MessageType type) {
+            this.type = type;
+            this.datagramPacket = datagramPacket;
+        }
+
+        @Override
+        public void run() {
+            System.out.println("Sending ACK to sender");
+            Message message = new Message(type);
+            Message.sendUdpMessage(message,datagramPacket.getAddress().getHostAddress(), datagramPacket.getPort(), socketUDP);
+            System.out.println("Message successfully sent");
         }
     }
 

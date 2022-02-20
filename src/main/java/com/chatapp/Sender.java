@@ -9,6 +9,8 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.util.concurrent.TimeUnit;
 
+import com.chatapp.Message.MessageType;
+
 
 public final class Sender implements AutoCloseable{
 
@@ -30,7 +32,7 @@ public final class Sender implements AutoCloseable{
         this.keyboardReader = System.console();
 
         System.out.println("Configurando receiver alvo");
-        System.out.println("Digite o IP:");
+        System.out.println("Digite o endereço IP do receiver:");
         this.receiverIpAddress = keyboardReader.readLine();
 
         System.out.println("Digite a porta do receiver:");
@@ -39,8 +41,8 @@ public final class Sender implements AutoCloseable{
         System.out.println("Digite a porta ouvinte:");
         this.listenerPort = Integer.parseInt(keyboardReader.readLine());
 
-        this.udpMessageListenerThread =  new UdpMessageListenerThread();
         this.udpSocket = new DatagramSocket(listenerPort);
+        this.udpMessageListenerThread =  new UdpMessageListenerThread();
         udpMessageListenerThread.start();
     }
 
@@ -93,13 +95,21 @@ public final class Sender implements AutoCloseable{
 
     class UdpMessageSenderThread extends Thread {
 
+        private final String messageBody;
+        private final MessageType type;
+
+        public UdpMessageSenderThread(String messageBody, MessageType type) {
+            this.messageBody = messageBody;
+            this.type = type;
+        }
+
         @Override
         public void run() {
             System.out.println("Sending message to receiver");
-            Message message = new Message("PCKT");
-            message.adicionarMensagem("body", "olá");
-            Message.enviarMensagemUDP(message, receiverIpAddress, receiverPort, udpSocket);
-            System.out.println("message successfully sent");
+            Message message = new Message(type);
+            message.adicionarMensagem("body", messageBody);
+            Message.sendUdpMessage(message, receiverIpAddress, receiverPort, udpSocket);
+            System.out.println("Message successfully sent");
         }
     }
 
@@ -127,7 +137,7 @@ public final class Sender implements AutoCloseable{
             try {
                 System.out.println("Digite a mensagem que deseja enviar:");
                 String senderMessager = keyboardReader.readLine();
-                UdpMessageSenderThread senderThread = new UdpMessageSenderThread();
+                UdpMessageSenderThread senderThread = new UdpMessageSenderThread(senderMessager, MessageType.PACKAGE);
                 senderThread.start();
             } catch (IOError e) {
                 System.err.println("Erro na captura da opção, tente novamente");

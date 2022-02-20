@@ -22,11 +22,11 @@ public class Message implements Serializable {
 
     private static final long serialVersionUID = -3969352858203924755L;
 
-    private final String title;
-    private final Map<String, Object> messages;
+    private final MessageType header;
+    private Map<String, Object> messages;
 
-    public Message(String title) {
-        this.title = title;
+    public Message(final MessageType header) {
+        this.header = header;
         this.messages = new HashMap<>();
     }
 
@@ -40,11 +40,11 @@ public class Message implements Serializable {
         messages.put(title, messageBody);
     }
 
-    public String getTitulo() {
-        return title;
+    public MessageType getHeader() {
+        return header;
     }
 
-    public Map<String, Object> getMensagens() {
+    public Map<String, Object> getMessages() {
         return messages;
     }
 
@@ -56,7 +56,7 @@ public class Message implements Serializable {
      * @param port port of the destination
      * @param socketUDP configured UDP socket
      */
-    public static void enviarMensagemUDP(Message message, String address, int port, DatagramSocket socketUDP) {
+    public static void sendUdpMessage(Message message, String address, int port, DatagramSocket socketUDP) {
         InetAddress destinationAddress;
         try {
             destinationAddress = InetAddress.getByName(address);
@@ -80,7 +80,7 @@ public class Message implements Serializable {
      * @param socketUDP socket UDP utilitário para o recebimento de Message.
      * @return devolve uma instância construída da Message recebida.
      */
-    public static Message receberMensagemUDP(DatagramSocket socketUDP) {
+    public static Message receiveUdpMessage(DatagramSocket socketUDP) {
         byte[] receivedBytes = new byte[8 * 1024];
         DatagramPacket packet = new DatagramPacket(receivedBytes, receivedBytes.length);
 
@@ -109,7 +109,12 @@ public class Message implements Serializable {
 
     @Override
     public String toString() {
-        return "Message [mensagens=" + messages + ", titulo=" + title + "]";
+        return "Message [mensagens=" + messages + ", titulo=" + header + "]";
+    }
+
+    public static enum MessageType {
+        PACKAGE,
+        ACKNOWLEDGE
     }
 
 }

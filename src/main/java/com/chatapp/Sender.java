@@ -7,9 +7,13 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 import com.chatapp.Message.MessageType;
+import com.chatapp.Message.Header;
+import com.chatapp.Message.MessageBodyType;
+
 
 
 public final class Sender implements AutoCloseable{
@@ -26,9 +30,17 @@ public final class Sender implements AutoCloseable{
     private final String receiverIpAddress;
     private final DatagramSocket udpSocket;
     private final MessageListenerThread udpMessageListenerThread;
+    public static final int WINDOW_LENGTH = 5;
+    private long windowStartIndex;
+    private ConcurrentHashMap<Long, BufferItem> pendingAcknowledgeBuffer;
+    private long currentMessageIndex;
 
 
     public Sender() throws IOException {
+        this.windowStartIndex = 0;
+        this.pendingAcknowledgeBuffer = new ConcurrentHashMap<>();
+        currentMessageIndex = 0;
+
         this.keyboardReader = System.console();
 
         System.out.println("Configurando receiver alvo");
@@ -49,6 +61,28 @@ public final class Sender implements AutoCloseable{
     @Override
     public void close() throws IOException {
         udpSocket.close();
+    }
+
+    class BufferItem {
+        private final Message message;
+        private boolean isPendingAcknowledge;
+
+        public BufferItem(final Message message) {
+            this.message = message;
+            this.isPendingAcknowledge = true;
+        }
+
+        public Message getMessage() {
+            return message;
+        }
+
+        public boolean isPendingAcknowledge() {
+            return isPendingAcknowledge;
+        }
+
+        public void acknowledge() {
+            this.isPendingAcknowledge = false;
+        }
     }
 
     class MessageListenerThread extends Thread {
@@ -75,7 +109,7 @@ public final class Sender implements AutoCloseable{
         }
 
 
-        private Message handleReceivedMessage() {
+        private void handleReceivedMessage() {
             byte[] receivedData = this.receivedPacket.getData();
 
             try (ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(receivedData);
@@ -83,32 +117,25 @@ public final class Sender implements AutoCloseable{
 
                 Message message = (Message) inputObject.readObject();
                 System.out.println("\nReceived message=" + message.toString());
-
-                return message;
+                updateBuffer(message);
             } catch (ClassNotFoundException | IOException e) {
                 e.printStackTrace();
             }
-
-            return null;
         }
     }
 
     class UdpMessageSenderThread extends Thread {
 
-        private final String messageBody;
-        private final MessageType type;
+        private final Message message;
 
-        public UdpMessageSenderThread(String messageBody, MessageType type) {
-            this.messageBody = messageBody;
-            this.type = type;
+        public UdpMessageSenderThread(final Message message) {
+            this.message = message;
         }
 
         @Override
         public void run() {
             System.out.println("Sending message to receiver");
-            Message message = new Message(type);
-            message.adicionarMensagem("body", messageBody);
-            Message.sendUdpMessage(message, receiverIpAddress, receiverPort, udpSocket);
+            Message.sendUdpMessage(this.message, receiverIpAddress, receiverPort, udpSocket);
             System.out.println("Message successfully sent");
         }
     }
@@ -131,18 +158,67 @@ public final class Sender implements AutoCloseable{
         }
     }
 
+    private synchronized void updateBuffer(Message receivedMessage) {
+        Header header = receivedMessage.getHeader();
+
+        if (!MessageType.ACKNOWLEDGE.equals(header.getMessageType())) {
+            return;
+        }
+
+        long index = header.getMessageIndex();
+
+        pendingAcknowledgeBuffer.computeIfPresent(index, (key, value) -> {
+            value.acknowledge();
+            return value;
+        });
+
+        updateWindow();
+    }
+
+    private synchronized void updateWindow() {
+        BufferItem packageItem = pendingAcknowledgeBuffer.get(this.windowStartIndex);
+
+        while (packageItem != null && !packageItem.isPendingAcknowledge) {
+            this.windowStartIndex++;
+            packageItem = pendingAcknowledgeBuffer.get(this.windowStartIndex);;
+        }
+    }
+
+    private void saveMessageOnBuffer(Message message) {
+        BufferItem packageItem = new BufferItem(message);
+        pendingAcknowledgeBuffer.put(this.currentMessageIndex, packageItem);
+        this.currentMessageIndex++;
+    }
 
     public void interactiveMenu() {
         while (true) {
             try {
-                System.out.println("Digite a mensagem que deseja enviar:");
-                String senderMessager = keyboardReader.readLine();
-                UdpMessageSenderThread senderThread = new UdpMessageSenderThread(senderMessager, MessageType.PACKAGE);
+                boolean isBufferFull = pendingAcknowledgeBuffer.size() == WINDOW_LENGTH;
+                if (isBufferFull) {
+                    System.out.println("O Buffer está cheio, enquanto não houve espaço disponível, não será permitido o envio de novas mensagens");
+                    continue;
+                }
+
+                String senderMessager = getSenderMessage();
+
+                Message message = new Message(MessageType.PACKAGE, this.currentMessageIndex);
+                message.addMessage(MessageBodyType.BODY.label, senderMessager);
+
+                saveMessageOnBuffer(message);
+
+                UdpMessageSenderThread senderThread = new UdpMessageSenderThread(message);
                 senderThread.start();
+
             } catch (IOError e) {
                 System.err.println("Erro na captura da opção, tente novamente");
             }
         }
+    }
+
+    private String getSenderMessage() {
+        System.out.println("Digite a mensagem que deseja enviar:");
+        String senderMessager = keyboardReader.readLine();
+        return senderMessager;
     }
 
     public static void main(String[] args) {

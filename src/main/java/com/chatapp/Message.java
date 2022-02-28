@@ -22,12 +22,30 @@ public class Message implements Serializable {
 
     private static final long serialVersionUID = -3969352858203924755L;
 
-    private final MessageType header;
+    private final Header header;
     private Map<String, Object> messages;
 
-    public Message(final MessageType header) {
-        this.header = header;
+    public Message(MessageType messageType, Long messageIndex) {
+        this.header = new Header(messageType, messageIndex);
         this.messages = new HashMap<>();
+    }
+
+    class Header {
+        private final MessageType messageType;
+        private final Long messageIndex;
+
+        public Header(MessageType messageType, Long messageIndex) {
+            this.messageType = messageType;
+            this.messageIndex = messageIndex;
+        }
+
+        public MessageType getMessageType() {
+            return messageType;
+        }
+
+        public Long getMessageIndex() {
+            return messageIndex;
+        }
     }
 
     /**
@@ -36,11 +54,11 @@ public class Message implements Serializable {
      * @param title title of the message
      * @param messageBody message body
      */
-    public void adicionarMensagem(String title, Object messageBody) {
+    public void addMessage(String title, Object messageBody) {
         messages.put(title, messageBody);
     }
 
-    public MessageType getHeader() {
+    public Header getHeader() {
         return header;
     }
 
@@ -115,6 +133,17 @@ public class Message implements Serializable {
     public static enum MessageType {
         PACKAGE,
         ACKNOWLEDGE
+    }
+
+    public static enum MessageBodyType {
+        BODY("body"),
+        INDEX("index");
+
+        public final String label;
+
+        private MessageBodyType(String label) {
+            this.label = label;
+        }
     }
 
 }

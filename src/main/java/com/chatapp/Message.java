@@ -30,7 +30,8 @@ public class Message implements Serializable {
         this.messages = new HashMap<>();
     }
 
-    class Header {
+    class Header implements Serializable {
+
         private final MessageType messageType;
         private final Long messageIndex;
 
@@ -46,6 +47,45 @@ public class Message implements Serializable {
         public Long getMessageIndex() {
             return messageIndex;
         }
+
+        @Override
+        public String toString() {
+            return "Header [messageIndex=" + messageIndex + ", messageType=" + messageType + "]";
+        }
+
+        @Override
+        public int hashCode() {
+            final int prime = 31;
+            int result = 1;
+            result = prime * result + getEnclosingInstance().hashCode();
+            result = prime * result + ((messageIndex == null) ? 0 : messageIndex.hashCode());
+            result = prime * result + ((messageType == null) ? 0 : messageType.hashCode());
+            return result;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj)
+                return true;
+            if (obj == null)
+                return false;
+            if (getClass() != obj.getClass())
+                return false;
+            Header other = (Header) obj;
+            if (messageIndex == null) {
+                if (other.messageIndex != null)
+                    return false;
+            } else if (!messageIndex.equals(other.messageIndex))
+                return false;
+            if (messageType != other.messageType)
+                return false;
+            return true;
+        }
+
+        private Message getEnclosingInstance() {
+            return Message.this;
+        }
+
     }
 
     /**
@@ -146,4 +186,28 @@ public class Message implements Serializable {
         }
     }
 
+    @Override
+    public int hashCode() {
+        final int prime = 31;
+        int result = 1;
+        result = prime * result + ((header == null) ? 0 : header.hashCode());
+        return result;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj)
+            return true;
+        if (obj == null)
+            return false;
+        if (getClass() != obj.getClass())
+            return false;
+        Message other = (Message) obj;
+        if (header == null) {
+            if (other.header != null)
+                return false;
+        } else if (!header.equals(other.header))
+            return false;
+        return true;
+    }
 }

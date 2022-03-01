@@ -10,23 +10,18 @@ import java.net.DatagramSocket;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 
-import com.chatapp.Message.MessageType;
 import com.chatapp.Message.Header;
 import com.chatapp.Message.MessageBodyType;
-
-
+import com.chatapp.Message.MessageType;
 
 public final class Sender implements AutoCloseable{
 
     /**
      *  Sets the default package size for transfer, which is by default 8 Kb.
      */
-    private final Console keyboardReader;
     public static final int PACKET_TRANSFER_SIZE = 1024 * 8;
-    private static int TIMER_REPLY_UDP = (int)TimeUnit.SECONDS.toMillis(2);
-    private static int MAX_SERVER_RETRIES = 5;
+    private final Console keyboardReader;
     private final int receiverPort;
     private final int listenerPort;
     private final String receiverIpAddress;
@@ -48,14 +43,14 @@ public final class Sender implements AutoCloseable{
 
         this.keyboardReader = System.console();
 
-        System.out.println("Configurando receiver alvo");
-        System.out.println("Digite o endereço IP do receiver:");
+        System.out.println(ConsoleMessageConstants.TARGET_RECEIVER_CONFIGURATION);
+        System.out.println(ConsoleMessageConstants.ASK_RECEIVER_IP);
         this.receiverIpAddress = keyboardReader.readLine();
 
-        System.out.println("Digite a porta do receiver:");
+        System.out.println(ConsoleMessageConstants.ASK_RECEIVER_PORT);
         this.receiverPort = Integer.parseInt(keyboardReader.readLine());
 
-        System.out.println("Digite a porta ouvinte:");
+        System.out.println(ConsoleMessageConstants.ASK_SENDER_PORT);
         this.listenerPort = Integer.parseInt(keyboardReader.readLine());
 
         this.udpSocket = new DatagramSocket(listenerPort);
@@ -66,9 +61,25 @@ public final class Sender implements AutoCloseable{
         this.messageTasksMap = new ConcurrentHashMap<>();
     }
 
+    static class ConsoleMessageConstants {
+        public final static String TARGET_RECEIVER_CONFIGURATION = "Configurando receiver alvo";
+        public final static String ASK_RECEIVER_IP = "Digite o endereço IP do receiver";
+        public final static String ASK_RECEIVER_PORT = "Digite a porta do receiver";
+        public final static String ASK_SENDER_PORT = "Digite a porta ouvinte";
+        public final static String MENU_MESSAGE_REQUEST = "Digite a mensagem que deseja enviar";
+        public final static String MENU_OPENING = "Escolha uma das opções de tipo de envio";
+        public final static String[] MENU_OPTIONS = {"lenta", "perda", "fora de ordem", "duplicada", "normal"};
+        public final static String MENU_SELECTION_ERROR = "Erro ao escolher opção, tente novamente";
+        public final static String MESSAGE_SENT = "Mensagem \"%s\" enviada como [%s] com id %d";
+        public final static String MESSAGE_RECEIVED = "Mensagem de id %d recebida pelo receiver";
+        public final static String RESENDING_PACKAGE_MESSAGE = "Mensagem de id %d não teve o recebimento confirmado, e portanto será reenviada";
+        public final static String BUFFER_FULL_MESSAGE = "O buffer de mensagem está cheio e enquanto não houver espaço disponível, novas mensagens serão rejeitadas";
+    }
+
     @Override
     public void close() throws IOException {
         udpSocket.close();
+        timer.cancel();
     }
 
     class BufferItem {
@@ -99,7 +110,6 @@ public final class Sender implements AutoCloseable{
 
         @Override
         public void run() {
-            System.out.println("Listening for incoming UDP messages");
             while (true) {
                 listenForMessages();
             }
@@ -124,7 +134,6 @@ public final class Sender implements AutoCloseable{
                 ObjectInputStream inputObject = new ObjectInputStream(new BufferedInputStream(byteArrayInputStream))) {
 
                 Message message = (Message) inputObject.readObject();
-                System.out.println("\nReceived message=" + message.toString());
                 updateBuffer(message);
             } catch (ClassNotFoundException | IOException e) {
                 e.printStackTrace();
@@ -191,6 +200,8 @@ public final class Sender implements AutoCloseable{
             return value;
         });
 
+        System.out.println(String.format(ConsoleMessageConstants.MESSAGE_RECEIVED, index));
+
         updateTasks(index);
         updateWindow();
     }
@@ -209,12 +220,12 @@ public final class Sender implements AutoCloseable{
         MessageTask task = messageTasksMap.get(messageIndex);
 
         if (task == null) {
-            System.out.println("Erro ao extrair cancelar task");
             return;
         }
 
         task.cancel();
         messageTasksMap.remove(messageIndex);
+        timer.purge();
     }
 
     private void saveMessageOnBuffer(Message message) {
@@ -235,7 +246,7 @@ public final class Sender implements AutoCloseable{
             try {
                 boolean isBufferFull = pendingAcknowledgeBuffer.size() == WINDOW_LENGTH;
                 if (isBufferFull) {
-                    System.out.println("O Buffer está cheio, enquanto não houve espaço disponível, não será permitido o envio de novas mensagens");
+                    System.out.println(ConsoleMessageConstants.BUFFER_FULL_MESSAGE);
                     continue;
                 }
 
@@ -251,13 +262,13 @@ public final class Sender implements AutoCloseable{
                 senderThread.start();
 
             } catch (IOError e) {
-                System.err.println("Erro na captura da opção, tente novamente");
+                System.err.println(ConsoleMessageConstants.MENU_SELECTION_ERROR);
             }
         }
     }
 
     private String getSenderMessage() {
-        System.out.println("Digite a mensagem que deseja enviar:");
+        System.out.println(ConsoleMessageConstants.MENU_MESSAGE_REQUEST);
         String senderMessager = keyboardReader.readLine();
         return senderMessager;
     }

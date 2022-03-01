@@ -2,14 +2,18 @@ package com.chatapp;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.Console;
-import java.io.IOError;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Queue;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 import com.chatapp.Message.Header;
 import com.chatapp.Message.MessageBodyType;
@@ -31,10 +35,12 @@ public final class Sender implements AutoCloseable{
     private long windowStartIndex;
     private ConcurrentHashMap<Long, BufferItem> pendingAcknowledgeBuffer;
     private long currentMessageIndex;
+    private SendMessageStrategy sendMessageStrategy;
 
     private Timer timer;
     private final ConcurrentHashMap<Long, MessageTask> messageTasksMap;
     private static final long RESENDING_MESSAGE_PERIOD = 1000l;
+    private final Queue<Message> outOfOrderMessages;
 
     public Sender() throws IOException {
         this.windowStartIndex = 0;
@@ -59,6 +65,20 @@ public final class Sender implements AutoCloseable{
 
         this.timer = new Timer();
         this.messageTasksMap = new ConcurrentHashMap<>();
+
+        this.outOfOrderMessages = new LinkedList<>();
+    }
+
+
+    private void setSendMessageStrategy(SendMessageStrategy strategy) {
+        this.sendMessageStrategy = strategy;
+    }
+
+
+    @Override
+    public void close() throws IOException {
+        udpSocket.close();
+        timer.cancel();
     }
 
     static class ConsoleMessageConstants {
@@ -67,8 +87,8 @@ public final class Sender implements AutoCloseable{
         public final static String ASK_RECEIVER_PORT = "Digite a porta do receiver";
         public final static String ASK_SENDER_PORT = "Digite a porta ouvinte";
         public final static String MENU_MESSAGE_REQUEST = "Digite a mensagem que deseja enviar";
-        public final static String MENU_OPENING = "Escolha uma das opções de tipo de envio";
-        public final static String[] MENU_OPTIONS = {"lenta", "perda", "fora de ordem", "duplicada", "normal"};
+        public final static String MENU_OPENING = "Digite o número do tipo de envio";
+        public final static List<String> MENU_OPTIONS = List.of("lenta", "perda", "fora de ordem", "duplicada", "normal");
         public final static String MENU_SELECTION_ERROR = "Erro ao escolher opção, tente novamente";
         public final static String MESSAGE_SENT = "Mensagem \"%s\" enviada como [%s] com id %d";
         public final static String MESSAGE_RECEIVED = "Mensagem de id %d recebida pelo receiver";
@@ -76,10 +96,71 @@ public final class Sender implements AutoCloseable{
         public final static String BUFFER_FULL_MESSAGE = "O buffer de mensagem está cheio e enquanto não houver espaço disponível, novas mensagens serão rejeitadas";
     }
 
-    @Override
-    public void close() throws IOException {
-        udpSocket.close();
-        timer.cancel();
+    public interface SendMessageStrategy {
+        void send(Message message);
+    }
+
+    public class RegularMessageSenderStrategy implements SendMessageStrategy {
+
+        @Override
+        public void send(Message message) {
+            new MessageSenderThread(message).start();
+            createResendMessageTask(message);
+        }
+    }
+
+    public class LostMessageSenderStrategy implements SendMessageStrategy {
+        @Override
+        public void send(Message message) {
+            createResendMessageTask(message);
+        }
+    }
+
+    public class SlowMessageSenderStrategy implements SendMessageStrategy{
+
+        private final long delay;
+
+        public SlowMessageSenderStrategy() {
+            this.delay = TimeUnit.SECONDS.toMillis(10);
+        }
+
+        private final class DelayedMessageSenderTask extends TimerTask {
+            Message message;
+
+            public DelayedMessageSenderTask(Message message) {
+                this.message = message;
+            }
+
+            @Override
+            public void run() {
+                new MessageSenderThread(message).start();
+                createResendMessageTask(message);
+            }
+        }
+
+        @Override
+        public void send(Message message) {
+            TimerTask task = new DelayedMessageSenderTask(message);
+            timer.schedule(task, delay);
+        }
+    }
+
+    public class DuplicatedMessageSenderStrategy implements SendMessageStrategy {
+
+        @Override
+        public void send(Message message) {
+            new MessageSenderThread(message).start();
+            new MessageSenderThread(message).start();
+            createResendMessageTask(message);
+        }
+    }
+
+    public class OutOfOrderSenderStrategy implements SendMessageStrategy {
+
+        @Override
+        public void send(Message message) {
+            outOfOrderMessages.add(message);
+        }
     }
 
     class BufferItem {
@@ -236,41 +317,81 @@ public final class Sender implements AutoCloseable{
 
     private void createResendMessageTask(Message message) {
         long messageIndex = message.getHeader().getMessageIndex();
+
+        if (messageTasksMap.contains(messageIndex)) {
+            return;
+        }
+
         MessageTask task = new MessageTask(message);
         timer.scheduleAtFixedRate(task, RESENDING_MESSAGE_PERIOD, RESENDING_MESSAGE_PERIOD);
         messageTasksMap.put(messageIndex, task);
     }
 
-    public void interactiveMenu() {
-        while (true) {
-            try {
-                boolean isBufferFull = pendingAcknowledgeBuffer.size() == WINDOW_LENGTH;
-                if (isBufferFull) {
-                    System.out.println(ConsoleMessageConstants.BUFFER_FULL_MESSAGE);
-                    continue;
-                }
-
-                String senderMessager = getSenderMessage();
-
-                Message message = new Message(MessageType.PACKAGE, this.currentMessageIndex);
-                message.addMessage(MessageBodyType.BODY.label, senderMessager);
-
-                saveMessageOnBuffer(message);
-                createResendMessageTask(message);
-
-                MessageSenderThread senderThread = new MessageSenderThread(message);
-                senderThread.start();
-
-            } catch (IOError e) {
-                System.err.println(ConsoleMessageConstants.MENU_SELECTION_ERROR);
-            }
+    private void sendOutOfOrderMessages(long userOptionIndex) {
+        if (userOptionIndex == 2) {
+            return;
         }
+
+        setSendMessageStrategy(new RegularMessageSenderStrategy());
+        outOfOrderMessages.forEach(message -> sendMessageStrategy.send(message));
     }
 
-    private String getSenderMessage() {
-        System.out.println(ConsoleMessageConstants.MENU_MESSAGE_REQUEST);
-        String senderMessager = keyboardReader.readLine();
-        return senderMessager;
+    /**
+     * @TODO: Replace by factory
+     * @param userOption
+     */
+    private void updateMessageStrategy(int userOptionIndex) {
+        SendMessageStrategy sendStrategy = null;
+
+        if (userOptionIndex == 0)
+            sendStrategy = new SlowMessageSenderStrategy();
+
+        if (userOptionIndex == 1)
+            sendStrategy = new LostMessageSenderStrategy();
+
+        if (userOptionIndex == 2)
+            sendStrategy = new OutOfOrderSenderStrategy();
+
+        if (userOptionIndex == 3)
+            sendStrategy = new DuplicatedMessageSenderStrategy();
+
+        if (userOptionIndex == 4)
+            sendStrategy = new RegularMessageSenderStrategy();
+
+        setSendMessageStrategy(sendStrategy);
+    }
+
+    public void interactiveMenu() {
+        while (true) {
+            boolean isBufferFull = pendingAcknowledgeBuffer.size() == WINDOW_LENGTH;
+
+            if (isBufferFull) {
+                System.out.println(ConsoleMessageConstants.BUFFER_FULL_MESSAGE);
+                continue;
+            }
+
+            List<String> optionsList = ConsoleMessageConstants.MENU_OPTIONS;
+
+            System.out.println(ConsoleMessageConstants.MENU_MESSAGE_REQUEST);
+            String senderMessage = keyboardReader.readLine();
+
+            System.out.println(ConsoleMessageConstants.MENU_OPENING);
+            IntStream.range(0, optionsList.size()).forEach(index -> System.out.println(index + " - " + optionsList.get(index)));
+            String userOption = keyboardReader.readLine();
+            int userOptionIndex = Integer.valueOf(userOption);
+
+            updateMessageStrategy(userOptionIndex);
+
+            Message message = new Message(MessageType.PACKAGE, this.currentMessageIndex);
+            message.addMessage(MessageBodyType.BODY.label, senderMessage);
+            saveMessageOnBuffer(message);
+
+            System.out.println(String.format(ConsoleMessageConstants.MESSAGE_SENT, senderMessage, optionsList.get(userOptionIndex), this.windowStartIndex));
+
+            sendMessageStrategy.send(message);
+
+            sendOutOfOrderMessages(userOptionIndex);
+        }
     }
 
     public static void main(String[] args) {

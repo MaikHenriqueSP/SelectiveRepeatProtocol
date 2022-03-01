@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
@@ -35,6 +37,9 @@ public final class Sender implements AutoCloseable{
     private ConcurrentHashMap<Long, BufferItem> pendingAcknowledgeBuffer;
     private long currentMessageIndex;
 
+    private Timer timer;
+    private final ConcurrentHashMap<Long, MessageTask> messageTasksMap;
+    private static final long RESENDING_MESSAGE_PERIOD = 1000l;
 
     public Sender() throws IOException {
         this.windowStartIndex = 0;
@@ -56,6 +61,9 @@ public final class Sender implements AutoCloseable{
         this.udpSocket = new DatagramSocket(listenerPort);
         this.udpMessageListenerThread =  new MessageListenerThread();
         udpMessageListenerThread.start();
+
+        this.timer = new Timer();
+        this.messageTasksMap = new ConcurrentHashMap<>();
     }
 
     @Override
@@ -124,19 +132,30 @@ public final class Sender implements AutoCloseable{
         }
     }
 
-    class UdpMessageSenderThread extends Thread {
-
+    class MessageTask extends TimerTask {
         private final Message message;
 
-        public UdpMessageSenderThread(final Message message) {
+        public MessageTask(final Message message) {
             this.message = message;
         }
 
         @Override
         public void run() {
-            System.out.println("Sending message to receiver");
+            new MessageSenderThread(message).start();
+        }
+    }
+
+    class MessageSenderThread extends Thread {
+
+        private final Message message;
+
+        public MessageSenderThread(final Message message) {
+            this.message = message;
+        }
+
+        @Override
+        public void run() {
             Message.sendUdpMessage(this.message, receiverIpAddress, receiverPort, udpSocket);
-            System.out.println("Message successfully sent");
         }
     }
 
@@ -172,6 +191,7 @@ public final class Sender implements AutoCloseable{
             return value;
         });
 
+        updateTasks(index);
         updateWindow();
     }
 
@@ -179,15 +199,35 @@ public final class Sender implements AutoCloseable{
         BufferItem packageItem = pendingAcknowledgeBuffer.get(this.windowStartIndex);
 
         while (packageItem != null && !packageItem.isPendingAcknowledge) {
+            pendingAcknowledgeBuffer.remove(this.windowStartIndex);
             this.windowStartIndex++;
-            packageItem = pendingAcknowledgeBuffer.get(this.windowStartIndex);;
+            packageItem = pendingAcknowledgeBuffer.get(this.windowStartIndex);
         }
+    }
+
+    private synchronized void updateTasks(long messageIndex) {
+        MessageTask task = messageTasksMap.get(messageIndex);
+
+        if (task == null) {
+            System.out.println("Erro ao extrair cancelar task");
+            return;
+        }
+
+        task.cancel();
+        messageTasksMap.remove(messageIndex);
     }
 
     private void saveMessageOnBuffer(Message message) {
         BufferItem packageItem = new BufferItem(message);
         pendingAcknowledgeBuffer.put(this.currentMessageIndex, packageItem);
         this.currentMessageIndex++;
+    }
+
+    private void createResendMessageTask(Message message) {
+        long messageIndex = message.getHeader().getMessageIndex();
+        MessageTask task = new MessageTask(message);
+        timer.scheduleAtFixedRate(task, RESENDING_MESSAGE_PERIOD, RESENDING_MESSAGE_PERIOD);
+        messageTasksMap.put(messageIndex, task);
     }
 
     public void interactiveMenu() {
@@ -205,8 +245,9 @@ public final class Sender implements AutoCloseable{
                 message.addMessage(MessageBodyType.BODY.label, senderMessager);
 
                 saveMessageOnBuffer(message);
+                createResendMessageTask(message);
 
-                UdpMessageSenderThread senderThread = new UdpMessageSenderThread(message);
+                MessageSenderThread senderThread = new MessageSenderThread(message);
                 senderThread.start();
 
             } catch (IOError e) {

@@ -6,9 +6,8 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-import java.util.LinkedList;
 import java.util.List;
-import java.util.Queue;
+import java.util.Stack;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
@@ -40,7 +39,7 @@ public final class Sender implements AutoCloseable{
     private Timer timer;
     private final ConcurrentHashMap<Long, MessageTask> messageTasksMap;
     private static final long RESENDING_MESSAGE_PERIOD = 1000l;
-    private final Queue<Message> outOfOrderMessages;
+    private final Stack<Message> outOfOrderMessages;
 
     public Sender() throws IOException {
         this.windowStartIndex = 0;
@@ -66,7 +65,7 @@ public final class Sender implements AutoCloseable{
         this.timer = new Timer();
         this.messageTasksMap = new ConcurrentHashMap<>();
 
-        this.outOfOrderMessages = new LinkedList<>();
+        this.outOfOrderMessages = new Stack<>();
     }
 
 
@@ -120,8 +119,8 @@ public final class Sender implements AutoCloseable{
 
         private final long delay;
 
-        public SlowMessageSenderStrategy() {
-            this.delay = TimeUnit.SECONDS.toMillis(10);
+        public SlowMessageSenderStrategy(long delay) {
+            this.delay = delay;
         }
 
         private final class DelayedMessageSenderTask extends TimerTask {
@@ -159,7 +158,7 @@ public final class Sender implements AutoCloseable{
 
         @Override
         public void send(Message message) {
-            outOfOrderMessages.add(message);
+            outOfOrderMessages.push(message);
         }
     }
 
@@ -231,6 +230,8 @@ public final class Sender implements AutoCloseable{
 
         @Override
         public void run() {
+            long messageIndex = message.getHeader().getMessageIndex();
+            System.out.println(String.format(ConsoleMessageConstants.RESENDING_PACKAGE_MESSAGE, messageIndex));
             new MessageSenderThread(message).start();
         }
     }
@@ -332,8 +333,13 @@ public final class Sender implements AutoCloseable{
             return;
         }
 
-        setSendMessageStrategy(new RegularMessageSenderStrategy());
-        outOfOrderMessages.forEach(message -> sendMessageStrategy.send(message));
+        setSendMessageStrategy(new SlowMessageSenderStrategy(TimeUnit.MILLISECONDS.toMillis(500)));
+
+        while (!this.outOfOrderMessages.isEmpty()) {
+            Message message = this.outOfOrderMessages.pop();
+            this.sendMessageStrategy.send(message);
+
+        }
     }
 
     /**
@@ -344,7 +350,7 @@ public final class Sender implements AutoCloseable{
         SendMessageStrategy sendStrategy = null;
 
         if (userOptionIndex == 0)
-            sendStrategy = new SlowMessageSenderStrategy();
+            sendStrategy = new SlowMessageSenderStrategy(TimeUnit.SECONDS.toMillis(10));
 
         if (userOptionIndex == 1)
             sendStrategy = new LostMessageSenderStrategy();
@@ -384,9 +390,8 @@ public final class Sender implements AutoCloseable{
 
             Message message = new Message(MessageType.PACKAGE, this.currentMessageIndex);
             message.addMessage(MessageBodyType.BODY.label, senderMessage);
+            System.out.println(String.format(ConsoleMessageConstants.MESSAGE_SENT, senderMessage, optionsList.get(userOptionIndex), this.currentMessageIndex));
             saveMessageOnBuffer(message);
-
-            System.out.println(String.format(ConsoleMessageConstants.MESSAGE_SENT, senderMessage, optionsList.get(userOptionIndex), this.windowStartIndex));
 
             sendMessageStrategy.send(message);
 

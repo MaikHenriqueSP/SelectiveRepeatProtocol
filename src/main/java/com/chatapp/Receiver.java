@@ -8,6 +8,7 @@ import java.io.ObjectInputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.nio.charset.Charset;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.PriorityQueue;
@@ -34,6 +35,15 @@ public class Receiver implements AutoCloseable {
         this.socketUDP = new DatagramSocket(SOCKET_RECEIVED_PORT);
         this.FICTITIOUS_SERVER_ADDRESS = serverAddress;
         this.messageBuffer = new PriorityQueue<>((a, b) -> a.getHeader().getMessageIndex().compareTo(b.getHeader().getMessageIndex()));
+    }
+
+    static class ConsoleMessageConstants {
+        public final static String DUPLICATED_MESSAGE = "Mensagem de id %d recebida de forma duplicada";
+        public final static String UNORDERED_MESSAGE = "Mensagem de id %d recebida fora de ordem, ainda não recebidos os identificadores [%s]";
+        public final static String ORDERED_MESSAGE = "Mensagem de id %d recebida na ordem, entregando para a camada de aplicação";
+        public final static String ERROR_TO_RECEIVE_MESSAGE = "Ocorreu um erro ao receber a mensagem";
+        public final static String INVALID_MESSAGE = "Mensagem recebida é inválida!";
+        public final static String BUFFER_FULL_ERROR = "Buffer cheio, rejeitando a mensagem";
     }
 
     /**
@@ -73,14 +83,14 @@ public class Receiver implements AutoCloseable {
             Optional<Message> optionalMessage = readClientMessage();
 
             if (optionalMessage.isEmpty()) {
-                System.out.println("Ocorreu um erro ao receber a mensagem");
+                System.out.println(ConsoleMessageConstants.ERROR_TO_RECEIVE_MESSAGE);
                 return;
             }
 
             Message senderMessage = optionalMessage.get();
 
             if (!isValidMessage(senderMessage)) {
-                System.out.println("Mensagem recebida é inválida!");
+                System.out.println(ConsoleMessageConstants.INVALID_MESSAGE);
                 return;
             }
 
@@ -129,11 +139,12 @@ public class Receiver implements AutoCloseable {
 
         boolean isDuplicatedMessage = messageIndex < this.windowStartIndex || messageBuffer.contains(message);
         if (isDuplicatedMessage) {
+            System.out.println(String.format(ConsoleMessageConstants.DUPLICATED_MESSAGE, messageIndex));
             return true;
         }
 
         if (isBufferFull() && messageIndex != this.windowStartIndex) {
-            System.out.println("Buffer cheio, rejeitando a mensagem");
+            System.out.println(ConsoleMessageConstants.BUFFER_FULL_ERROR);
             return false;
         }
 
@@ -143,9 +154,17 @@ public class Receiver implements AutoCloseable {
             return false;
         }
 
+        boolean isCurrentExpectedMessage = messageBuffer.peek().getHeader().getMessageIndex().equals(this.windowStartIndex);
+
+        if (messageBuffer.peek().equals(message) && isCurrentExpectedMessage) {
+            System.out.println(String.format(ConsoleMessageConstants.ORDERED_MESSAGE, messageIndex));
+        } else {
+            String missingMessages = getMissingIndexes(messageIndex);
+            System.out.println(String.format(ConsoleMessageConstants.UNORDERED_MESSAGE, messageIndex, missingMessages));
+        }
+
         while (!messageBuffer.isEmpty() && messageBuffer.peek().getHeader().getMessageIndex().equals(this.windowStartIndex)) {
-            Message bufferMessage = messageBuffer.poll();
-            displayReceivedMessage(bufferMessage);
+            messageBuffer.poll();
             this.windowStartIndex++;
         }
 
@@ -156,11 +175,25 @@ public class Receiver implements AutoCloseable {
         return Sender.WINDOW_LENGTH == messageBuffer.size();
     }
 
-    private void displayReceivedMessage(Message message) {
-        Map<String, Object> messages =  message.getMessages();
-        String messageText = (String) messages.get(MessageBodyType.BODY.label);
-        System.out.println("Printing message:");
-        System.out.println(messageText);
+    private String getMissingIndexes(long lastReceivedIndex) {
+        StringBuilder builder = new StringBuilder();
+
+        Map<Long, Message> alreadyReceivedMessages = new HashMap<>();
+
+        for (Message message : messageBuffer) {
+            long messageIndex = message.getHeader().getMessageIndex();
+            if (messageIndex >= this.windowStartIndex && messageIndex < lastReceivedIndex) {
+                alreadyReceivedMessages.put(messageIndex, message);
+            }
+        }
+
+        for (long i = this.windowStartIndex; i < lastReceivedIndex; i++) {
+            if (!alreadyReceivedMessages.containsKey(i)) {
+                builder.append(" " + i + " ");
+            }
+        }
+
+        return builder.toString();
     }
 
     class MessageSenderThread extends Thread {
@@ -175,10 +208,8 @@ public class Receiver implements AutoCloseable {
 
         @Override
         public void run() {
-            System.out.println("Sending ACK to sender");
             Message message = new Message(MessageType.ACKNOWLEDGE, header.getMessageIndex());
             Message.sendUdpMessage(message,datagramPacket.getAddress().getHostAddress(), datagramPacket.getPort(), socketUDP);
-            System.out.println("Message successfully sent");
         }
     }
 

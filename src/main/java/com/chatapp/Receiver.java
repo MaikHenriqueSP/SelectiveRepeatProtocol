@@ -1,18 +1,16 @@
 package com.chatapp;
 import java.io.BufferedInputStream;
-import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.ObjectInputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-import java.nio.charset.Charset;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Queue;
+import java.util.Scanner;
 
 import com.chatapp.Message.Header;
 import com.chatapp.Message.MessageBodyType;
@@ -22,21 +20,32 @@ public class Receiver implements AutoCloseable {
 
     private final DatagramSocket socketUDP;
     public static final int SOCKET_RECEIVED_PORT = 10098;
-    public static final String SERVER_ADDRESS = "localhost";
-    public final String FICTITIOUS_SERVER_ADDRESS;
     private static final int TRANSFER_PACKET_SIZE = 8 * 1024;
-    private static final String STANDARD_IP_ADDRESS = "127.0.0.1";
     private long windowStartIndex;
+    /**
+     * Buffer utilizado para atender item 3.7.
+     *
+     * A estrutura de dados escolhida é o PriorityQueue, de forma que ordena-se de forma crescentem as mensagens pelo seu
+     * índice, assim sempre teremos ao topo a mensagem mais antiga.
+     */
     private final Queue<Message> messageBuffer;
 
 
-    public Receiver(String serverAddress) throws IOException {
+    /**
+     * Usado para a configuração do Receiver, requisita somente a porta ouvinte e define automaticamente o IP como localhost
+     *
+     * @param porta
+     * @throws IOException
+     */
+    public Receiver(int porta) throws IOException {
         this.windowStartIndex = 0;
-        this.socketUDP = new DatagramSocket(SOCKET_RECEIVED_PORT);
-        this.FICTITIOUS_SERVER_ADDRESS = serverAddress;
+        this.socketUDP = new DatagramSocket(porta);
         this.messageBuffer = new PriorityQueue<>((a, b) -> a.getHeader().getMessageIndex().compareTo(b.getHeader().getMessageIndex()));
     }
 
+    /**
+     * Define em formato de constantes as mensagens que serão impressas no console, tem o intuito de padronizar e centralizar
+     */
     static class ConsoleMessageConstants {
         public final static String DUPLICATED_MESSAGE = "Mensagem de id %d recebida de forma duplicada";
         public final static String UNORDERED_MESSAGE = "Mensagem de id %d recebida fora de ordem, ainda não recebidos os identificadores [%s]";
@@ -47,8 +56,9 @@ public class Receiver implements AutoCloseable {
     }
 
     /**
-     * Server listener, which means it remains blocked waiting on UDP messages.
-     * On every message received it starts a thread responsible for dealing with the request, allowing the server to handle multiple requests.
+     * Ouvinte do receveir, ou seja, fica esperando por mensagens UDP na thread principal e quando uma mensagem é recebida
+     * cria uma nova thread com o ListenerThread para que o tratamento seja em paralelo e não bloqueie o recebimento de novas
+     * mensagens
      *
      * @throws IOException
      * @throws ClassNotFoundException
@@ -58,7 +68,7 @@ public class Receiver implements AutoCloseable {
             byte[] receivedBytes = new byte[TRANSFER_PACKET_SIZE];
             DatagramPacket packet = new DatagramPacket(receivedBytes, receivedBytes.length);
             socketUDP.receive(packet);
-            new ListenerThread(packet).start();
+            new MessageHandlerThread(packet).start();
         }
     }
 
@@ -68,16 +78,21 @@ public class Receiver implements AutoCloseable {
     }
 
     /**
-     * Handles client requests, handling the UDP packet received and perform concurrent modifications on the server state,
-     * adding, removing and updating the Peers information.
+     * Faz o tratamento de mensagens UDP recebidas do Sender e faz o redirecionamento da resposta ACK caso o pacote recebido
+     * seja válido.
      */
-    class ListenerThread extends Thread {
+    class MessageHandlerThread extends Thread {
         private DatagramPacket receivedPacket;
 
-        public ListenerThread(DatagramPacket receivedPacket) {
+        public MessageHandlerThread(DatagramPacket receivedPacket) {
             this.receivedPacket = receivedPacket;
         }
 
+        /**
+         * A ideia é validar a mensagem e iniciar uma nova thread para fazer o envio do ACK.
+         * A partir do sucesso ou não do tratamento da mensagem no método handleReceivedMessage, faz-se ou não
+         * o envio da mensagem de ACK de volta para o Sender.
+         */
         @Override
         public void run() {
             Optional<Message> optionalMessage = readClientMessage();
@@ -102,6 +117,10 @@ public class Receiver implements AutoCloseable {
 
         }
 
+        /**
+         * Converte o array de bytes recebidos em uma instância de Message
+         * @return Uma instância de mensagem ou um optional vazio caso a mensagem lida seja inválida ou corrompida.
+         */
         private Optional<Message> readClientMessage() {
             byte[] receivedData = this.receivedPacket.getData();
 
@@ -118,6 +137,11 @@ public class Receiver implements AutoCloseable {
         }
     }
 
+    /**
+     * Valida mensagens, simplesmente checa se tem mensagem no corpo e se o tipo da mensagem é PACKAGE
+     * @param message Mensagem recebida do Sender
+     * @return true se a mensagem é válida
+     */
     private boolean isValidMessage(Message message) {
         Header header = message.getHeader();
 
@@ -134,6 +158,34 @@ public class Receiver implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Implementação auxiliar para atingir os itens de 3.2 ao 3.5 - Tratamento dos diferentes tipos de envio de mensagem
+     *
+     * Caso o buffer esteja cheio e a mensagem não seja a esperada para completar a lacuna de início da janela, então a mensagem
+     * é considerada inválida e o método retorna false e logo não é enviado um ACK para o Sender.
+     *
+     * 3.3 - Fora de ordem
+     *  Todo pacote recebido que é válido, é adicionado ao buffer, como o buffer é ordenado pelo índice dos pacotes, temos
+     *  para a impressão de mensagem de reconhecimento que se o elemento que está no topo do buffer não tem índice igual ao valor do ponteiro
+     *  início da janela (windowStartIndex), este é considerado fora de ordem e então o ponteiro não é atualizado e nenhum item do buffer é removido,
+     *  mas como a implementação segue o princípio de enviar ACKs indivíduais do SR, então um ACK para este pacote é enviado.
+     *
+     *  Caso seja o pacote que completa a primeira lacuna da janela, ou seja, tem índice igual a windowStartIndex, o valor de windowStartIndex
+     *  é incrementado e o correspondente elemento do topo do buffer é removido e isso se repete enquanto o valor do índice do
+     *  pacote for igual à windowStartIndex.
+     *
+     * 3.4 - Mensagem duplicada
+     *  A verificação de mensagens duplicadas é feita segundo duas bases, o buffer e o ponteiro de início da janela, assim
+     *  caso a mensagem recebida esteja no buffer, ou seu índice seja menor que índice de início da janela, a mensagem é
+     *  então considerada como duplicada e então true é retornado, permitindo a resposta de ACK.
+     *
+     * 3.5 - Pacotes lentos
+     *  Não tem impacto no Receiver a não ser que outra mensagem seja recebida antes, de modo que nesses casos o tratamento é o
+     *  mesmo que para pacotes fora de ordem.
+     *
+     * @param message
+     * @return
+     */
     private synchronized boolean handleReceivedMessage(Message message) {
         long messageIndex = message.getHeader().getMessageIndex();
 
@@ -163,18 +215,38 @@ public class Receiver implements AutoCloseable {
             System.out.println(String.format(ConsoleMessageConstants.UNORDERED_MESSAGE, messageIndex, missingMessages));
         }
 
-        while (!messageBuffer.isEmpty() && messageBuffer.peek().getHeader().getMessageIndex().equals(this.windowStartIndex)) {
-            messageBuffer.poll();
-            this.windowStartIndex++;
-        }
+        updateWindow();
 
         return true;
     }
 
+    /**
+     * Implementação auxiliar para atingir os itens de 3.7 - Buffer e janela do SR
+     * A ideia da implementação é avançar o ponteiro da janela e remover elementos do buffer enquanto o elemento
+     * do topo tiver índice igual a windowStartIndex
+     */
+    private void updateWindow() {
+        while (!messageBuffer.isEmpty() && messageBuffer.peek().getHeader().getMessageIndex().equals(this.windowStartIndex)) {
+            messageBuffer.poll();
+            this.windowStartIndex++;
+        }
+    }
+
+    /**
+     * Implementação auxiliar para atingir o item de 3.7 - Buffer
+     * O buffer é considerado cheio se o tamanho da janela é igual ao número de elementos no buffer
+     * @return true se o buffer está cheio
+     */
     private boolean isBufferFull() {
         return Sender.WINDOW_LENGTH == messageBuffer.size();
     }
 
+    /**
+     * Implementação auxiliar para atingir o item de 4.2 - Impressão dos pacotes faltantes
+     *
+     * @param lastReceivedIndex - Índice do último pacote recebido
+     * @return Elementos que faltam para completar lacuna
+     */
     private String getMissingIndexes(long lastReceivedIndex) {
         StringBuilder builder = new StringBuilder();
 
@@ -196,6 +268,9 @@ public class Receiver implements AutoCloseable {
         return builder.toString();
     }
 
+    /**
+     * Thread usada para enviar mensagens ao Sender
+     */
     class MessageSenderThread extends Thread {
 
         private final Header header;
@@ -209,23 +284,23 @@ public class Receiver implements AutoCloseable {
         @Override
         public void run() {
             Message message = new Message(MessageType.ACKNOWLEDGE, header.getMessageIndex());
-            Message.sendUdpMessage(message,datagramPacket.getAddress().getHostAddress(), datagramPacket.getPort(), socketUDP);
+            Message.sendUdpMessage(message, datagramPacket.getAddress().getHostAddress(), datagramPacket.getPort(), socketUDP);
         }
     }
 
-    private static String readServerAddress() {
-        System.out.println("IP do Receiver:");
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, Charset.defaultCharset()));){
-            return reader.readLine();
-        } catch (IOException e) {
-            return STANDARD_IP_ADDRESS;
+    private static int readServerPort() {
+        System.out.println("Digite a porta do Receiver:");
+        try (Scanner scanner = new Scanner(System.in)){
+            return scanner.nextInt();
+        } catch (Exception e) {
+            return SOCKET_RECEIVED_PORT;
         }
     }
 
     public static void main(String[] args) {
-        String enderecoServidor = readServerAddress();
+        int porta = readServerPort();
 
-        try (Receiver Receiver = new Receiver(enderecoServidor)){
+        try (Receiver Receiver = new Receiver(porta)){
             Receiver.listenForMessages();
         } catch (Exception e) {
             e.printStackTrace();

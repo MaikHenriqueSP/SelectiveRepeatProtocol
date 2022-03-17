@@ -30,6 +30,12 @@ public class Message implements Serializable {
         this.messages = new HashMap<>();
     }
 
+    /**
+     * Implementação auxiliar para atingir o item 3.1 - Cabeçalho do pacote
+     *
+     * O cabeçalho tem dois atributos, o messageType que é um enum que tem os valores PACKAGE e ACKNOWLEDGE e o messageIndex
+     * que representa o índice do pacote.
+     */
     class Header implements Serializable {
 
         private final MessageType messageType;
@@ -89,30 +95,36 @@ public class Message implements Serializable {
     }
 
     /**
-     * Adds a body value to the message
+     * É usado para adicionar mensagens, toda mensagem tem um título e corpo.
      *
-     * @param title title of the message
-     * @param messageBody message body
+     * @param title Título da mensagem
+     * @param messageBody Corpo da mensagem
      */
     public void addMessage(String title, Object messageBody) {
         messages.put(title, messageBody);
     }
 
+    /**
+     * @return Header da mensagem
+     */
     public Header getHeader() {
         return header;
     }
 
+    /**
+     * @return Todas as mensagens armazenadas
+     */
     public Map<String, Object> getMessages() {
         return messages;
     }
 
     /**
-     * Sends UDP messages
+     * Envia uma mensagem UDP
      *
-     * @param message message to be sent
-     * @param address IP address of the destination
-     * @param port port of the destination
-     * @param socketUDP configured UDP socket
+     * @param message Mensagem a ser enviada
+     * @param address Endereço IP do destinatário
+     * @param port Porta de destino
+     * @param socketUDP Socket UDP
      */
     public static void sendUdpMessage(Message message, String address, int port, DatagramSocket socketUDP) {
         InetAddress destinationAddress;
@@ -133,7 +145,7 @@ public class Message implements Serializable {
     }
 
     /**
-     * Receives UDP messages within size at most of
+     * Recebe e converte uma mensagem recebida via UDP para uma instância de Message.
      *
      * @param socketUDP socket UDP utilitário para o recebimento de Message.
      * @return devolve uma instância construída da Message recebida.
@@ -170,11 +182,19 @@ public class Message implements Serializable {
         return "Message [mensagens=" + messages + ", header=" + header + "]";
     }
 
+    /**
+     * Define quais os tipos de pacotes que podem ser enviado.
+     * Para mensagens padrão é utilizado o PACKAGE, enquanto para ACK é utilizado o ACKNOWLEDGE.
+     */
     public static enum MessageType {
         PACKAGE,
         ACKNOWLEDGE
     }
 
+    /**
+     * Define os tipos de mensagens que podem estar contidas no pacote, as mensagens de texto são enviadas
+     * via body.
+     */
     public static enum MessageBodyType {
         BODY("body"),
         INDEX("index");
